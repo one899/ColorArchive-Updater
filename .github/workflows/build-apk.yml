@@ -50,5 +50,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release view latest >/dev/null 2>&1 || gh release create latest --title "ColorArchive Updater" --notes "auto build" --latest
-          gh release upload latest ColorArchiveUpdater.apk --clobber
+          gh release view lkm-latest >/dev/null 2>&1 || gh release create lkm-latest --title "ColorArchive Updater" --notes "auto build" --latest
+          gh release upload lkm-latest ColorArchiveUpdater.apk --clobber
