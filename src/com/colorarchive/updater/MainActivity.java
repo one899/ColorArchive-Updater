@@ -65,6 +65,7 @@ public class MainActivity extends Activity {
     private String cloudKoVer = null, cloudBootVer = null;
     private long cloudKoEpoch = 0, cloudBootEpoch = 0;
     private String cloudKoSha = "", cloudBootSha = "";
+    private String cloudKoDate = "", cloudBootDate = "";
 
     @Override
     protected void onCreate(Bundle b) {
@@ -468,11 +469,13 @@ public class MainActivity extends Activity {
                 cloudKoVer = ko.optString("version", "?");
                 cloudKoEpoch = ko.optLong("build_epoch", 0);
                 cloudKoSha = ko.optString("sha256", "");
+                cloudKoDate = ko.optString("build_date", "");
             }
             if (boot != null) {
                 cloudBootVer = boot.optString("version", "?");
                 cloudBootEpoch = boot.optLong("build_epoch", 0);
                 cloudBootSha = boot.optString("sha256", "");
+                cloudBootDate = boot.optString("build_date", "");
             }
         } catch (Exception ignore) { }
 
@@ -502,9 +505,11 @@ public class MainActivity extends Activity {
                     bootNewer = cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch;
                 }
                 koLocal.setText("本地 " + (localKoVer == null ? "内置（随内核）" : localKoVer)
-                        + "   ·   云端 " + (cloudKoVer == null ? "未知" : cloudKoVer));
+                        + "  ·  云端 " + (cloudKoVer == null ? "未知" : cloudKoVer)
+                        + (cloudKoDate.isEmpty() ? "" : "\n云端构建 " + fmtIso(cloudKoDate)));
                 bootLocal.setText("本地 " + System.getProperty("os.version")
-                        + "\n云端 " + (cloudBootVer == null ? "未知" : cloudBootVer));
+                        + "\n构建 " + fmtEpoch(localBootEpoch)
+                        + (cloudBootDate.isEmpty() ? "" : "  ·  云端 " + fmtIso(cloudBootDate)));
                 if (koNewer) showBadge(koBadge, "模块有新版", C_WARN); else hideBadge(koBadge);
                 if (bootNewer) showBadge(bootBadge, "内核有新版", C_WARN); else hideBadge(bootBadge);
                 if (showDialog && (koNewer || bootNewer)) {
@@ -551,6 +556,17 @@ public class MainActivity extends Activity {
         String v = execRoot("cat " + META_VER + " 2>/dev/null");
         if (v == null || v.trim().length() == 0) return null;
         return v.trim();
+    }
+
+    private String fmtEpoch(long ep) {
+        if (ep <= 0) return "未知";
+        SimpleDateFormat f = new SimpleDateFormat("MM-dd HH:mm", Locale.US);
+        return f.format(new Date(ep * 1000));
+    }
+
+    private String fmtIso(String iso) {
+        if (iso == null || iso.length() < 16) return "未知";
+        return iso.substring(5, 10).replace("-", "-") + " " + iso.substring(11, 16);
     }
 
     private long parseKernelDate(String unameV) {
