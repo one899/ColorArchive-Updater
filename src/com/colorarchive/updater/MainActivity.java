@@ -113,7 +113,7 @@ public class MainActivity extends Activity {
         setContentView(sv);
 
         refresh();
-        new Thread(new Runnable() { public void run() { loadManifest(false); } }).start();
+        new Thread(new Runnable() { public void run() { loadManifest(true); } }).start();
     }
 
     // ---------- 主题 ----------
@@ -481,8 +481,15 @@ public class MainActivity extends Activity {
 
         ui.post(new Runnable() {
             public void run() {
-                boolean koNewer = cloudKoEpoch > 0 && (localKoEpoch(localKoVer) <= 0 || cloudKoEpoch > localKoEpoch(localKoVer));
-                boolean bootNewer = cloudBootEpoch > localBootEpoch && localBootEpoch > 0;
+                long lv = parseNum(localKoVer);
+                long cv = parseNum(cloudKoVer);
+                boolean koNewer;
+                if (lv > 0 && cv > 0) {
+                    koNewer = cv > lv;
+                } else {
+                    koNewer = cloudKoEpoch > 0 && localBootEpoch > 0 && cloudKoEpoch > localBootEpoch;
+                }
+                boolean bootNewer = cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch;
                 koLocal.setText("本地 " + (localKoVer == null ? "内置（随内核）" : localKoVer)
                         + "   ·   云端 " + (cloudKoVer == null ? "未知" : cloudKoVer));
                 bootLocal.setText("本地 " + System.getProperty("os.version")
@@ -524,9 +531,9 @@ public class MainActivity extends Activity {
 
     private void hideBadge(TextView v) { v.setVisibility(View.GONE); }
 
-    private long localKoEpoch(String ver) {
-        if (ver == null) return 0;
-        try { return Long.parseLong(ver.trim()); } catch (Exception e) { return 0; }
+    private long parseNum(String v) {
+        if (v == null) return 0;
+        try { return Long.parseLong(v.trim()); } catch (Exception e) { return 0; }
     }
 
     private String readLocalKoVersion() {
@@ -639,6 +646,7 @@ public class MainActivity extends Activity {
                 + " && sync && stat -c %s '" + META + "'");
         if (res == null || res.trim().length() == 0) { toast("写入失败（root 未授权）"); return; }
         refresh();
+        new Thread(new Runnable() { public void run() { loadManifest(false); } }).start();
         confirm("模块已更新", "已写入 " + res.trim() + " 字节" + (ver.isEmpty() ? "" : "（v" + ver + "）")
                 + "\n重启后生效", "立即重启", "稍后",
                 new Runnable() { public void run() { execRoot("reboot"); } });
