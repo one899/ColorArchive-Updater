@@ -24,7 +24,7 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 public class MainActivity extends Activity {
-    private static final String REPO = "one899/android_kernel_oneplus_sm8350_9rt_295bpf";
+    private static final String REPO = "one899/ColorArchive-Updater";
     private static final String TAG = "lkm-latest";
     private static final String META = "/metadata/ksu/kernelsu.ko";
 
