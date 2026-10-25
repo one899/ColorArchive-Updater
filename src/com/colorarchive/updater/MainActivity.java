@@ -572,12 +572,14 @@ public class MainActivity extends Activity {
     private long parseKernelDate(String unameV) {
         if (unameV == null) return 0;
         try {
-            int idx = unameV.indexOf("SMP");
-            if (idx < 0) return 0;
-            String rest = unameV.substring(idx);
-            String datePart = rest.replaceAll("^SMP[^0-9]*", "");
+            java.util.regex.Matcher m = java.util.regex.Pattern
+                    .compile("(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\s+([A-Za-z]{3})\\s+(\\d{1,2})\\s+(\\d{2}:\\d{2}:\\d{2})\\s+(\\S+)\\s+(\\d{4})")
+                    .matcher(unameV);
+            if (!m.find()) return 0;
+            String stamp = m.group(1) + " " + m.group(2) + " " + m.group(3) + " "
+                    + m.group(4) + " " + m.group(5) + " " + m.group(6);
             SimpleDateFormat f = new SimpleDateFormat("EEE MMM d HH:mm:ss zzz yyyy", Locale.US);
-            Date d = f.parse(datePart.trim());
+            Date d = f.parse(stamp);
             return d == null ? 0 : d.getTime() / 1000;
         } catch (Exception e) { return 0; }
     }
