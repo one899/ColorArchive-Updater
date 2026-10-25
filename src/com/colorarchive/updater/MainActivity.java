@@ -489,7 +489,18 @@ public class MainActivity extends Activity {
                 } else {
                     koNewer = cloudKoEpoch > 0 && localBootEpoch > 0 && cloudKoEpoch > localBootEpoch;
                 }
-                boolean bootNewer = cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch;
+                String localBootVer = System.getProperty("os.version");
+                boolean bootNewer;
+                if (cloudBootVer != null && cloudBootVer.length() > 4 && !cloudBootVer.equals("?")) {
+                    int cmp = cloudBootVer.compareTo(localBootVer);
+                    if (cmp != 0) {
+                        bootNewer = cmp > 0;
+                    } else {
+                        bootNewer = cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch;
+                    }
+                } else {
+                    bootNewer = cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch;
+                }
                 koLocal.setText("本地 " + (localKoVer == null ? "内置（随内核）" : localKoVer)
                         + "   ·   云端 " + (cloudKoVer == null ? "未知" : cloudKoVer));
                 bootLocal.setText("本地 " + System.getProperty("os.version")
