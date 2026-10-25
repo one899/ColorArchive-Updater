@@ -572,6 +572,21 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return null; }
     }
 
+    private String sha256(File f) {
+        try {
+            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            byte[] buf = new byte[262144];
+            int n;
+            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
+            in.close();
+            byte[] d = md.digest();
+            StringBuilder sb = new StringBuilder();
+            for (byte x : d) sb.append(String.format("%02x", x));
+            return sb.toString();
+        } catch (Exception e) { return null; }
+    }
+
     private File download(String url, String name, long expectSize) throws Exception {
         HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
         c.setConnectTimeout(8000); c.setReadTimeout(180000);
@@ -597,11 +612,18 @@ public class MainActivity extends Activity {
         return out;
     }
 
-    private File downloadWithMirrors(String asset, String localName, long expectSize) {
+    private File downloadWithMirrors(String asset, String localName, long expectSize, String expectSha) {
         for (String u : candidateUrls(asset)) {
             try {
                 toast("下载中… " + u.substring(0, Math.min(48, u.length())));
                 File f = download(u, localName, expectSize);
+                if (expectSha != null && expectSha.length() == 64) {
+                    String got = sha256(f);
+                    if (got == null || !got.equalsIgnoreCase(expectSha)) {
+                        toast("SHA256 校验失败，换源…");
+                        continue;
+                    }
+                }
                 toast("下载完成 " + (f.length() / 1024) + " KB");
                 return f;
             } catch (Exception ignore) { }
@@ -638,7 +660,7 @@ public class MainActivity extends Activity {
 
     // ---------- 功能 ----------
     private void downloadKo() {
-        File ko = downloadWithMirrors(KO_NAME, "kernelsu.ko", 0);
+        File ko = downloadWithMirrors(KO_NAME, "kernelsu.ko", 0, cloudKoSha);
         if (ko == null) return;
         String ver = cloudKoVer == null ? "" : cloudKoVer;
         String res = execRoot("mkdir -p /metadata/ksu && cp -f '" + ko.getAbsolutePath() + "' '" + META
@@ -654,7 +676,7 @@ public class MainActivity extends Activity {
 
     private void flashBoot() {
         toast("准备下载 boot（约 192 MB）…");
-        File img = downloadWithMirrors(BOOT_NAME, "boot.img", 0);
+        File img = downloadWithMirrors(BOOT_NAME, "boot.img", 0, cloudBootSha);
         if (img == null) return;
         if (img.length() < 64L * 1024 * 1024) { toast("镜像太小，已中止"); return; }
         String magic = execRoot("head -c 8 '" + img.getAbsolutePath() + "'");
