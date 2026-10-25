@@ -411,7 +411,7 @@ public class MainActivity extends Activity {
     private void updateProgress(final int pct) {
         ui.post(new Runnable() { public void run() {
             if (pct < 0) { bar.setVisibility(View.GONE); }
-            else { bar.setVisibility(View.VISIBLE); bar.updateProgress(pct); }
+            else { bar.setVisibility(View.VISIBLE); bar.setProgress(pct); }
         } });
     }
 
