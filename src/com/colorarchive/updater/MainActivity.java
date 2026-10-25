@@ -134,7 +134,9 @@ public class MainActivity extends Activity {
     /** 国内可达的 GitHub 加速前缀，按顺序尝试 */
     private String[] candidateUrls(String asset) {
         String direct = "https://github.com/" + REPO + "/releases/download/" + TAG + "/" + asset;
+        String r2 = "https://lkm.colorarchive.cloud/" + asset;
         return new String[]{
+                r2,
                 direct,
                 "https://ghproxy.net/" + direct,
                 "https://gh-proxy.com/" + direct,
