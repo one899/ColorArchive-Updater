@@ -1,0 +1,25 @@
+name: Mirror kernel assets
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */6 * * *"
+
+permissions:
+  contents: write
+
+jobs:
+  mirror:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Mirror lkm-latest from kernel repo
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -x
+          SRC=one899/android_kernel_oneplus_sm8350_9rt_295bpf
+          rm -rf /tmp/a && mkdir -p /tmp/a
+          gh release download lkm-latest --repo "$SRC" --dir /tmp/a --clobber || { echo "no source release yet"; exit 0; }
+          ls -l /tmp/a
+          gh release view lkm-latest >/dev/null 2>&1 || gh release create lkm-latest --title "ColorArchive LKM" --notes "mirrored from kernel CI" || true
+          gh release upload lkm-latest /tmp/a/* --clobber || true
+          gh release view lkm-latest --json assets -q ".assets[].name"
