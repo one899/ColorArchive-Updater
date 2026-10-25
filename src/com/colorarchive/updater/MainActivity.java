@@ -408,10 +408,10 @@ public class MainActivity extends Activity {
         ui.post(new Runnable() { public void run() { heroSub.setText(msg); } });
     }
 
-    private void setProgress(final int pct) {
+    private void updateProgress(final int pct) {
         ui.post(new Runnable() { public void run() {
             if (pct < 0) { bar.setVisibility(View.GONE); }
-            else { bar.setVisibility(View.VISIBLE); bar.setProgress(pct); }
+            else { bar.setVisibility(View.VISIBLE); bar.updateProgress(pct); }
         } });
     }
 
@@ -581,11 +581,11 @@ public class MainActivity extends Activity {
             fo.write(buf, 0, n); done += n;
             if (total > 0) {
                 int pct = (int) (done * 100 / total);
-                if (pct != lastPct && pct % 2 == 0) { lastPct = pct; setProgress(pct); }
+                if (pct != lastPct && pct % 2 == 0) { lastPct = pct; updateProgress(pct); }
             }
         }
         fo.close(); in.close();
-        setProgress(-1);
+        updateProgress(-1);
         if (expectSize > 0 && done != expectSize) throw new Exception("size mismatch");
         return out;
     }
@@ -599,7 +599,7 @@ public class MainActivity extends Activity {
                 return f;
             } catch (Exception ignore) { }
         }
-        setProgress(-1);
+        updateProgress(-1);
         toast("所有源都失败");
         return null;
     }
