@@ -66,6 +66,7 @@ public class MainActivity extends Activity {
     private long cloudKoEpoch = 0, cloudBootEpoch = 0;
     private String cloudKoSha = "", cloudBootSha = "";
     private String cloudKoDate = "", cloudBootDate = "";
+    private volatile boolean bootNewerFlag = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -494,6 +495,7 @@ public class MainActivity extends Activity {
                 }
                 String localBootVer = System.getProperty("os.version");
                 boolean bootNewer;
+                bootNewerFlag = false;
                 if (cloudBootVer != null && cloudBootVer.length() > 4 && !cloudBootVer.equals("?")) {
                     int cmp = cloudBootVer.compareTo(localBootVer);
                     if (cmp != 0) {
@@ -510,6 +512,7 @@ public class MainActivity extends Activity {
                 bootLocal.setText("本地 " + System.getProperty("os.version")
                         + "\n构建 " + fmtEpoch(localBootEpoch)
                         + (cloudBootDate.isEmpty() ? "" : "  ·  云端 " + fmtIso(cloudBootDate)));
+                bootNewerFlag = bootNewer;
                 if (koNewer) showBadge(koBadge, "模块有新版", C_WARN); else hideBadge(koBadge);
                 if (bootNewer) showBadge(bootBadge, "内核有新版", C_WARN); else hideBadge(bootBadge);
                 if (showDialog && (koNewer || bootNewer)) {
@@ -521,8 +524,9 @@ public class MainActivity extends Activity {
                             .setMessage(msg)
                             .setPositiveButton("安装并重启", new DialogInterface.OnClickListener() {
                                 public void onClick(DialogInterface x, int w) {
+                                    final boolean doBoot = bootNewerFlag;
                                     new Thread(new Runnable() { public void run() {
-                                        downloadKo();
+                                        if (doBoot) { flashBoot(); } else { downloadKo(); }
                                     }}).start();
                                 }
                             })
@@ -572,14 +576,12 @@ public class MainActivity extends Activity {
     private long parseKernelDate(String unameV) {
         if (unameV == null) return 0;
         try {
-            java.util.regex.Matcher m = java.util.regex.Pattern
-                    .compile("(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\\s+([A-Za-z]{3})\\s+(\\d{1,2})\\s+(\\d{2}:\\d{2}:\\d{2})\\s+(\\S+)\\s+(\\d{4})")
-                    .matcher(unameV);
-            if (!m.find()) return 0;
-            String stamp = m.group(1) + " " + m.group(2) + " " + m.group(3) + " "
-                    + m.group(4) + " " + m.group(5) + " " + m.group(6);
+            int idx = unameV.indexOf("SMP");
+            if (idx < 0) return 0;
+            String rest = unameV.substring(idx);
+            String datePart = rest.replaceAll("^SMP[^0-9]*", "");
             SimpleDateFormat f = new SimpleDateFormat("EEE MMM d HH:mm:ss zzz yyyy", Locale.US);
-            Date d = f.parse(stamp);
+            Date d = f.parse(datePart.trim());
             return d == null ? 0 : d.getTime() / 1000;
         } catch (Exception e) { return 0; }
     }
