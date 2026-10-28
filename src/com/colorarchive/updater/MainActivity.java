@@ -4,10 +4,7 @@ import android.app.Activity;
 import android.app.AlertDialog;
 import android.content.DialogInterface;
 import android.content.res.ColorStateList;
-import android.graphics.Canvas;
 import android.graphics.Color;
-import android.graphics.Paint;
-import android.graphics.Path;
 import android.graphics.Typeface;
 import android.graphics.drawable.GradientDrawable;
 import android.graphics.drawable.RippleDrawable;
@@ -15,6 +12,7 @@ import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.PowerManager;
 import android.view.Gravity;
 import android.view.View;
 import android.view.ViewGroup;
@@ -27,26 +25,34 @@ import org.json.JSONObject;
 
 import java.io.BufferedReader;
 import java.io.File;
+import java.io.FileInputStream;
 import java.io.FileOutputStream;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
+import java.util.zip.GZIPInputStream;
 
 public class MainActivity extends Activity {
+    private static final String R2_BASE = "https://lkm.colorarchive.cloud/";
     private static final String REPO = "one899/ColorArchive-Updater";
     private static final String TAG = "lkm-latest";
-    private static final String R2_BASE = "https://lkm.colorarchive.cloud/";
+
     private static final String META = "/metadata/ksu/kernelsu.ko";
     private static final String META_VER = "/metadata/ksu/version.txt";
     private static final String KO_NAME = "kernelsu-stripped.ko";
     private static final String BOOT_NAME = "boot-lkm-9rt.img";
+    private static final String BOOT_GZ = "boot-lkm-9rt.img.gz";
     private static final String MANIFEST = "manifest.json";
+    private static final String APP_META = "app.json";
 
-    // 品牌固定配色
+    private static final int MY_VER = 3;
+
     private static final int C_PRIMARY = 0xFF4F5BD5;
     private static final int C_SURFACE = 0xFFFBFBFF;
     private static final int C_SURFACE_VAR = 0xFFEEF0F8;
@@ -54,24 +60,24 @@ public class MainActivity extends Activity {
     private static final int C_ON_VAR = 0xFF5A5D72;
     private static final int C_CONTAINER = 0xFFE3E6FF;
     private static final int C_ON_CONTAINER = 0xFF16194A;
-    private static final int C_OK = 0xFF1F8A4C;
-    private static final int C_WARN = 0xFFB4690E;
 
     private final Handler ui = new Handler(Looper.getMainLooper());
     private TextView heroTitle, heroSub, chipRoot, chipMod, chipHot;
-    private TextView koLocal, koCloud, bootLocal, bootCloud, koBadge, bootBadge;
+    private TextView koLocal, bootLocal, koBadge, bootBadge;
     private ProgressBar bar;
+    private PowerManager.WakeLock wake;
 
-    private String cloudKoVer = null, cloudBootVer = null;
+    private String cloudKoVer = null, cloudBootVer = null, cloudKoDate = "", cloudBootDate = "";
     private long cloudKoEpoch = 0, cloudBootEpoch = 0;
     private String cloudKoSha = "", cloudBootSha = "";
-    private String cloudKoDate = "", cloudBootDate = "";
-    private volatile boolean bootNewerFlag = false;
 
     @Override
     protected void onCreate(Bundle b) {
         super.onCreate(b);
         edgeToEdge();
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        wake = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "ColorArchive:dl");
+        wake.setReferenceCounted(false);
 
         ScrollView sv = new ScrollView(this);
         sv.setBackgroundColor(C_SURFACE);
@@ -89,7 +95,7 @@ public class MainActivity extends Activity {
         root.addView(section("操作"));
         root.addView(filledCard(IconView.ICON_DOWNLOAD, "更新内核模块", "0.4 MB · 写入 /metadata 后重启生效",
                 new Runnable() { public void run() { downloadKo(); } }));
-        root.addView(tonalCard(IconView.ICON_BOLT, "刷写 boot 镜像", "192 MB · 校验并备份后写入 boot 分区",
+        root.addView(tonalCard(IconView.ICON_BOLT, "刷写 boot 镜像", "192 MB · 自动选最快节点 · 支持断点续传",
                 new Runnable() { public void run() { flashBoot(); } }));
 
         LinearLayout row = new LinearLayout(this);
@@ -102,10 +108,11 @@ public class MainActivity extends Activity {
                         new Runnable() { public void run() { execRoot("reboot"); } });
             }
         });
-        TextView refresh = textButton("刷新状态");
+        TextView refresh = textButton("检查更新");
         refresh.setOnClickListener(new View.OnClickListener() {
-            public void onClick(View v) { new Thread(new Runnable() {
-                public void run() { refresh(); loadManifest(true); } }).start(); }
+            public void onClick(View v) {
+                new Thread(new Runnable() { public void run() { loadManifest(); checkAppUpdate(true); } }).start();
+            }
         });
         row.addView(reboot, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         row.addView(refresh, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
@@ -115,7 +122,13 @@ public class MainActivity extends Activity {
         setContentView(sv);
 
         refresh();
-        new Thread(new Runnable() { public void run() { loadManifest(true); } }).start();
+        new Thread(new Runnable() { public void run() { loadManifest(); checkAppUpdate(false); } }).start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (wake != null && wake.isHeld()) wake.release();
+        super.onDestroy();
     }
 
     // ---------- 主题 ----------
@@ -144,12 +157,6 @@ public class MainActivity extends Activity {
         return d;
     }
 
-    private void ripple(View v, int color, int r) {
-        if (Build.VERSION.SDK_INT >= 21) {
-            v.setBackground(new RippleDrawable(ColorStateList.valueOf(alpha(C_PRIMARY, 0.12f)), null, null));
-        }
-    }
-
     private int alpha(int c, float a) {
         return Color.argb((int) (255 * a), Color.red(c), Color.green(c), Color.blue(c));
     }
@@ -160,7 +167,6 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(10), 0, dp(4));
-
         TextView logo = new TextView(this);
         logo.setText("CA");
         logo.setTextSize(16);
@@ -172,7 +178,6 @@ public class MainActivity extends Activity {
         circle.setShape(GradientDrawable.OVAL);
         logo.setBackground(circle);
         row.addView(logo, new LinearLayout.LayoutParams(dp(44), dp(44)));
-
         LinearLayout t = new LinearLayout(this);
         t.setOrientation(LinearLayout.VERTICAL);
         t.setPadding(dp(14), 0, 0, 0);
@@ -182,7 +187,7 @@ public class MainActivity extends Activity {
         a.setTypeface(null, Typeface.BOLD);
         a.setTextColor(C_ON_SURFACE);
         TextView c = new TextView(this);
-        c.setText("LKM 更新器");
+        c.setText("LKM 更新器 v3.0");
         c.setTextSize(13);
         c.setTextColor(C_ON_VAR);
         t.addView(a);
@@ -206,21 +211,18 @@ public class MainActivity extends Activity {
         c.setOrientation(LinearLayout.VERTICAL);
         c.setBackground(bg(C_CONTAINER, 24));
         c.setPadding(dp(20), dp(20), dp(20), dp(20));
-
         heroTitle = new TextView(this);
         heroTitle.setText("检测中…");
         heroTitle.setTextSize(20);
         heroTitle.setTypeface(null, Typeface.BOLD);
         heroTitle.setTextColor(C_ON_CONTAINER);
         c.addView(heroTitle);
-
         heroSub = new TextView(this);
         heroSub.setTextSize(12);
         heroSub.setTextColor(alpha(C_ON_CONTAINER, 0.78f));
         heroSub.setPadding(0, dp(4), 0, dp(14));
         heroSub.setLineSpacing(dp(3), 1f);
         c.addView(heroSub);
-
         LinearLayout chips = new LinearLayout(this);
         chips.setOrientation(LinearLayout.HORIZONTAL);
         chipRoot = chip("root");
@@ -236,7 +238,6 @@ public class MainActivity extends Activity {
         g2.leftMargin = dp(8);
         chips.addView(chipHot, g2);
         c.addView(chips);
-
         bar = new ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal);
         bar.setMax(100);
         bar.setProgress(0);
@@ -245,7 +246,6 @@ public class MainActivity extends Activity {
                 ViewGroup.LayoutParams.MATCH_PARENT, dp(6));
         bl.topMargin = dp(16);
         c.addView(bar, bl);
-
         return withMargin(c);
     }
 
@@ -267,20 +267,13 @@ public class MainActivity extends Activity {
         c.setOrientation(LinearLayout.VERTICAL);
         c.setBackground(bg(C_SURFACE_VAR, 24));
         c.setPadding(dp(20), dp(6), dp(20), dp(6));
-
         c.addView(versionRow("内核模块", true));
-        c.addView(divider());
+        View div = new View(this);
+        div.setBackgroundColor(alpha(C_ON_VAR, 0.15f));
+        div.setLayoutParams(new LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, dp(1)));
+        c.addView(div);
         c.addView(versionRow("内核", false));
         return withMargin(c);
-    }
-
-    private View divider() {
-        View v = new View(this);
-        v.setBackgroundColor(alpha(C_ON_VAR, 0.15f));
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(
-                ViewGroup.LayoutParams.MATCH_PARENT, dp(1));
-        v.setLayoutParams(lp);
-        return v;
     }
 
     private View versionRow(String label, final boolean isKo) {
@@ -288,7 +281,6 @@ public class MainActivity extends Activity {
         row.setOrientation(LinearLayout.HORIZONTAL);
         row.setGravity(Gravity.CENTER_VERTICAL);
         row.setPadding(0, dp(14), 0, dp(14));
-
         LinearLayout left = new LinearLayout(this);
         left.setOrientation(LinearLayout.VERTICAL);
         TextView t1 = new TextView(this);
@@ -301,13 +293,11 @@ public class MainActivity extends Activity {
         left.addView(t1);
         left.addView(t2);
         row.addView(left, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
-
         TextView badge = new TextView(this);
         badge.setTextSize(11);
         badge.setPadding(dp(8), dp(4), dp(8), dp(4));
         badge.setVisibility(View.GONE);
         row.addView(badge);
-
         if (isKo) { koLocal = t2; koBadge = badge; } else { bootLocal = t2; bootBadge = badge; }
         return row;
     }
@@ -316,16 +306,16 @@ public class MainActivity extends Activity {
         LinearLayout c = new LinearLayout(this);
         c.setOrientation(LinearLayout.HORIZONTAL);
         c.setGravity(Gravity.CENTER_VERTICAL);
-        c.setBackground(bg(C_PRIMARY, 24));
         c.setPadding(dp(18), dp(18), dp(18), dp(18));
         c.setClickable(true);
         if (Build.VERSION.SDK_INT >= 21) {
             c.setBackground(new RippleDrawable(ColorStateList.valueOf(alpha(Color.WHITE, 0.2f)),
                     bg(C_PRIMARY, 24), null));
+        } else {
+            c.setBackground(bg(C_PRIMARY, 24));
         }
         IconView iv = new IconView(this, icon, Color.WHITE);
         c.addView(iv, new LinearLayout.LayoutParams(dp(28), dp(28)));
-
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(14), 0, 0, 0);
@@ -350,7 +340,6 @@ public class MainActivity extends Activity {
         c.setClickable(true);
         IconView iv = new IconView(this, icon, C_PRIMARY);
         c.addView(iv, new LinearLayout.LayoutParams(dp(28), dp(28)));
-
         LinearLayout col = new LinearLayout(this);
         col.setOrientation(LinearLayout.VERTICAL);
         col.setPadding(dp(14), 0, 0, 0);
@@ -389,7 +378,7 @@ public class MainActivity extends Activity {
         return t;
     }
 
-    // ---------- 弹窗 ----------
+    // ---------- 提示 ----------
     private void confirm(final String title, final String msg, final String ok, final String cancel,
                          final Runnable onOk) {
         ui.post(new Runnable() {
@@ -397,8 +386,7 @@ public class MainActivity extends Activity {
                 AlertDialog d = new AlertDialog.Builder(MainActivity.this)
                         .setTitle(title).setMessage(msg)
                         .setPositiveButton(ok, new DialogInterface.OnClickListener() {
-                            public void onClick(DialogInterface x, int w) {
-                                new Thread(onOk).start(); } })
+                            public void onClick(DialogInterface x, int w) { new Thread(onOk).start(); } })
                         .setNegativeButton(cancel, null).create();
                 d.setCanceledOnTouchOutside(true);
                 d.show();
@@ -410,59 +398,58 @@ public class MainActivity extends Activity {
         ui.post(new Runnable() { public void run() { heroSub.setText(msg); } });
     }
 
-    private void updateProgress(final int pct) {
-        ui.post(new Runnable() { public void run() {
-            if (pct < 0) { bar.setVisibility(View.GONE); }
-            else { bar.setVisibility(View.VISIBLE); bar.setProgress(pct); }
-        } });
-    }
-
-    // ---------- 状态 ----------
-    private void refresh() {
-        String root = execRoot("id");
-        final boolean rootOk = root != null && root.contains("uid=0");
-        final String kv = System.getProperty("os.version");
-        boolean mod = false, hot = false;
-        String localKo = "内置（随内核）";
-        if (rootOk) {
-            String mc = execRoot("grep -c kernelsu /proc/modules");
-            mod = mc != null && mc.trim().startsWith("1");
-            String sz = execRoot("stat -c %s " + META + " 2>/dev/null");
-            hot = sz != null && sz.trim().length() > 0 && !sz.trim().equals("0");
-            String v = execRoot("cat " + META_VER + " 2>/dev/null");
-            if (v != null && v.trim().length() > 0) localKo = v.trim();
-        }
-        final boolean fMod = mod, fHot = hot;
-        final String fLocalKo = localKo;
+    private void progress(final int pct, final String note) {
         ui.post(new Runnable() {
             public void run() {
-                heroTitle.setText(rootOk ? (fMod ? "运行正常" : "模块未加载") : "需要 root 授权");
-                StringBuilder sb = new StringBuilder();
-                sb.append("内核 ").append(kv);
-                if (!rootOk) sb.append("\n点操作按钮会弹出授权请求");
-                heroSub.setText(sb.toString());
-                chipRoot.setText(rootOk ? "root ✓" : "root ✗");
-                chipMod.setText(fMod ? "模块 ✓" : "模块 ✗");
-                chipHot.setText(fHot ? "热更新 ✓" : "热更新 —");
-                koLocal.setText("本地 " + fLocalKo);
-                bootLocal.setText("本地 " + kv);
+                if (pct < 0) { bar.setVisibility(View.GONE); }
+                else { bar.setVisibility(View.VISIBLE); bar.setProgress(pct); }
+                if (note != null) heroSub.setText(note);
             }
         });
     }
 
-    private void loadManifest(final boolean showDialog) {
+    // ---------- 状态 ----------
+    private void refresh() {
+        new Thread(new Runnable() {
+            public void run() {
+                String root = execRoot("id");
+                final boolean rootOk = root != null && root.contains("uid=0");
+                final String kv = System.getProperty("os.version");
+                boolean mod = false, hot = false;
+                String localKo = "内置（随内核）";
+                if (rootOk) {
+                    String mc = execRoot("grep -c kernelsu /proc/modules");
+                    mod = mc != null && mc.trim().startsWith("1");
+                    String sz = execRoot("stat -c %s " + META + " 2>/dev/null");
+                    hot = sz != null && sz.trim().length() > 0 && !sz.trim().equals("0");
+                    String v = execRoot("cat " + META_VER + " 2>/dev/null");
+                    if (v != null && v.trim().length() > 0) localKo = v.trim();
+                }
+                final boolean fMod = mod, fHot = hot;
+                final String fLocalKo = localKo;
+                ui.post(new Runnable() {
+                    public void run() {
+                        heroTitle.setText(rootOk ? (fMod ? "运行正常" : "模块未加载") : "需要 root 授权");
+                        heroSub.setText("内核 " + kv + (rootOk ? "" : "\n点操作按钮会弹出授权请求"));
+                        chipRoot.setText(rootOk ? "root ✓" : "root ✗");
+                        chipMod.setText(fMod ? "模块 ✓" : "模块 ✗");
+                        chipHot.setText(fHot ? "热更新 ✓" : "热更新 —");
+                        koLocal.setText("本地 " + fLocalKo);
+                        bootLocal.setText("本地 " + kv);
+                    }
+                });
+            }
+        }).start();
+    }
+
+    // ---------- 云端清单 ----------
+    private void loadManifest() {
         JSONObject m = null;
         try {
             String txt = httpGet(R2_BASE + MANIFEST);
             if (txt != null && txt.length() > 10) m = new JSONObject(txt);
         } catch (Exception ignore) { }
-        if (m == null) {
-            ui.post(new Runnable() { public void run() {
-                koBadge.setVisibility(View.GONE);
-                bootBadge.setVisibility(View.GONE);
-            } });
-            return;
-        }
+        if (m == null) return;
         try {
             JSONObject ko = m.optJSONObject("ko");
             JSONObject boot = m.optJSONObject("boot");
@@ -482,68 +469,37 @@ public class MainActivity extends Activity {
 
         final long localBootEpoch = parseKernelDate(exec("uname -v"));
         final String localKoVer = readLocalKoVersion();
-
         ui.post(new Runnable() {
             public void run() {
-                long lv = parseNum(localKoVer);
-                long cv = parseNum(cloudKoVer);
-                boolean koNewer;
-                if (lv > 0 && cv > 0) {
-                    koNewer = cv > lv;
-                } else {
-                    koNewer = cloudKoEpoch > 0 && localBootEpoch > 0 && cloudKoEpoch > localBootEpoch;
-                }
+                long lv = parseNum(localKoVer), cv = parseNum(cloudKoVer);
+                boolean koNewer = (lv > 0 && cv > 0) ? cv > lv
+                        : (cloudKoEpoch > 0 && localBootEpoch > 0 && cloudKoEpoch > localBootEpoch);
                 String localBootVer = System.getProperty("os.version");
                 boolean bootNewer;
-                bootNewerFlag = false;
-                if (cloudBootVer != null && cloudBootVer.length() > 4 && !cloudBootVer.equals("?")) {
+                if (cloudBootVer != null && cloudBootVer.length() > 4) {
                     int cmp = cloudBootVer.compareTo(localBootVer);
-                    if (cmp != 0) {
-                        bootNewer = cmp > 0;
-                    } else {
-                        bootNewer = cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch;
-                    }
+                    bootNewer = cmp != 0 ? cmp > 0
+                            : (cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch);
                 } else {
                     bootNewer = cloudBootEpoch > 0 && localBootEpoch > 0 && cloudBootEpoch > localBootEpoch;
                 }
-                koLocal.setText("本地 " + (localKoVer == null ? "内置（随内核）" : localKoVer)
+                koLocal.setText("本地 " + (localKoVer == null ? "内置" : localKoVer)
                         + "  ·  云端 " + (cloudKoVer == null ? "未知" : cloudKoVer)
                         + (cloudKoDate.isEmpty() ? "" : "\n云端构建 " + fmtIso(cloudKoDate)));
-                bootLocal.setText("本地 " + System.getProperty("os.version")
+                bootLocal.setText("本地 " + localBootVer
                         + "\n构建 " + fmtEpoch(localBootEpoch)
                         + (cloudBootDate.isEmpty() ? "" : "  ·  云端 " + fmtIso(cloudBootDate)));
-                bootNewerFlag = bootNewer;
-                if (koNewer) showBadge(koBadge, "模块有新版", C_WARN); else hideBadge(koBadge);
-                if (bootNewer) showBadge(bootBadge, "内核有新版", C_WARN); else hideBadge(bootBadge);
-                if (showDialog && (koNewer || bootNewer)) {
-                    String msg = (koNewer ? "内核模块：" + (localKoVer == null ? "内置" : localKoVer) + " → " + cloudKoVer : "")
-                            + (koNewer && bootNewer ? "\n" : "")
-                            + (bootNewer ? "内核：云端 " + cloudBootVer + " 已发布" : "");
-                    AlertDialog d = new AlertDialog.Builder(MainActivity.this)
-                            .setTitle("有新版本可用")
-                            .setMessage(msg)
-                            .setPositiveButton("安装并重启", new DialogInterface.OnClickListener() {
-                                public void onClick(DialogInterface x, int w) {
-                                    final boolean doBoot = bootNewerFlag;
-                                    new Thread(new Runnable() { public void run() {
-                                        if (doBoot) { flashBoot(); } else { downloadKo(); }
-                                    }}).start();
-                                }
-                            })
-                            .setNegativeButton("以后再说", null)
-                            .create();
-                    d.setCanceledOnTouchOutside(true);
-                    d.show();
-                }
+                if (koNewer) showBadge(koBadge, "模块有新版"); else hideBadge(koBadge);
+                if (bootNewer) showBadge(bootBadge, "内核有新版"); else hideBadge(bootBadge);
             }
         });
     }
 
-    private void showBadge(TextView v, String text, int color) {
+    private void showBadge(TextView v, String text) {
         v.setText(text);
         v.setTextColor(Color.WHITE);
         GradientDrawable d = new GradientDrawable();
-        d.setColor(color);
+        d.setColor(0xFFB4690E);
         d.setCornerRadius(dp(12));
         v.setBackground(d);
         v.setVisibility(View.VISIBLE);
@@ -558,19 +514,17 @@ public class MainActivity extends Activity {
 
     private String readLocalKoVersion() {
         String v = execRoot("cat " + META_VER + " 2>/dev/null");
-        if (v == null || v.trim().length() == 0) return null;
-        return v.trim();
+        return (v == null || v.trim().length() == 0) ? null : v.trim();
     }
 
     private String fmtEpoch(long ep) {
         if (ep <= 0) return "未知";
-        SimpleDateFormat f = new SimpleDateFormat("MM-dd HH:mm", Locale.US);
-        return f.format(new Date(ep * 1000));
+        return new SimpleDateFormat("MM-dd HH:mm", Locale.US).format(new Date(ep * 1000));
     }
 
     private String fmtIso(String iso) {
         if (iso == null || iso.length() < 16) return "未知";
-        return iso.substring(5, 10).replace("-", "-") + " " + iso.substring(11, 16);
+        return iso.substring(5, 10) + " " + iso.substring(11, 16);
     }
 
     private long parseKernelDate(String unameV) {
@@ -582,100 +536,264 @@ public class MainActivity extends Activity {
             if (!m.find()) return 0;
             String stamp = m.group(1) + " " + m.group(2) + " " + m.group(3) + " "
                     + m.group(4) + " " + m.group(5) + " " + m.group(6);
-            SimpleDateFormat f = new SimpleDateFormat("EEE MMM d HH:mm:ss zzz yyyy", Locale.US);
-            Date d = f.parse(stamp);
+            Date d = new SimpleDateFormat("EEE MMM d HH:mm:ss zzz yyyy", Locale.US).parse(stamp);
             return d == null ? 0 : d.getTime() / 1000;
         } catch (Exception e) { return 0; }
     }
 
+    // ---------- 软件自身更新 ----------
+    private void checkAppUpdate(final boolean manual) {
+        String txt = null;
+        try { txt = httpGet(R2_BASE + APP_META); } catch (Exception ignore) { }
+        if (txt == null) { if (manual) toast("检查更新失败（网络）"); return; }
+        String url = null, name = null;
+        int code = 0;
+        try {
+            JSONObject o = new JSONObject(txt);
+            code = o.optInt("versionCode", 0);
+            name = o.optString("versionName", "?");
+            url = o.optString("url", null);
+        } catch (Exception ignore) { }
+        if (code > MY_VER && url != null) {
+            final String fUrl = url, fName = name;
+            ui.post(new Runnable() {
+                public void run() {
+                    AlertDialog d = new AlertDialog.Builder(MainActivity.this)
+                            .setTitle("小程序有新版本")
+                            .setMessage("最新版本 " + fName + "（当前 3.0）\n是否下载并安装？")
+                            .setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
+                                public void onClick(DialogInterface x, int w) {
+                                    new Thread(new Runnable() { public void run() { installSelf(fUrl); } }).start();
+                                }
+                            })
+                            .setNegativeButton("以后再说", null).create();
+                    d.setCanceledOnTouchOutside(true);
+                    d.show();
+                }
+            });
+        } else if (manual) {
+            toast("已是最新版本（v3.0）");
+        }
+    }
+
+    private void installSelf(String url) {
+        try {
+            File apk = new File(getCacheDir(), "update.apk");
+            if (apk.exists()) apk.delete();
+            downloadResumable(url, apk, 0, "小程序更新包");
+            String r = execRoot("pm install -r '" + apk.getAbsolutePath() + "' 2>&1");
+            if (r != null && r.contains("Success")) {
+                toast("小程序已更新，重启应用生效");
+                execRoot("am force-stop com.colorarchive.updater");
+            } else {
+                toast("安装失败：" + (r == null ? "无输出" : r.trim()));
+            }
+        } catch (Exception e) {
+            toast("更新失败：" + e.getMessage());
+        }
+    }
+
     // ---------- 网络 ----------
     private String httpGet(String url) {
-        try {
-            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-            c.setConnectTimeout(6000); c.setReadTimeout(15000);
-            c.setInstanceFollowRedirects(true);
-            if (c.getResponseCode() != 200) return null;
-            InputStream in = c.getInputStream();
-            byte[] buf = new byte[8192];
-            StringBuilder sb = new StringBuilder();
-            int n;
-            while ((n = in.read(buf)) > 0) sb.append(new String(buf, 0, n, "UTF-8"));
-            in.close();
-            return sb.toString();
-        } catch (Exception e) { return null; }
-    }
-
-    private String sha256(File f) {
-        try {
-            java.security.MessageDigest md = java.security.MessageDigest.getInstance("SHA-256");
-            java.io.FileInputStream in = new java.io.FileInputStream(f);
-            byte[] buf = new byte[262144];
-            int n;
-            while ((n = in.read(buf)) > 0) md.update(buf, 0, n);
-            in.close();
-            byte[] d = md.digest();
-            StringBuilder sb = new StringBuilder();
-            for (byte x : d) sb.append(String.format("%02x", x));
-            return sb.toString();
-        } catch (Exception e) { return null; }
-    }
-
-    private File download(String url, String name, long expectSize) throws Exception {
-        HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
-        c.setConnectTimeout(8000); c.setReadTimeout(180000);
-        c.setInstanceFollowRedirects(true);
-        c.setRequestProperty("User-Agent", "ColorArchive-Updater");
-        if (c.getResponseCode() != 200) throw new Exception("HTTP " + c.getResponseCode());
-        long total = c.getContentLength();
-        File out = new File(getCacheDir(), name);
-        InputStream in = c.getInputStream();
-        FileOutputStream fo = new FileOutputStream(out);
-        byte[] buf = new byte[262144];
-        int n; long done = 0; int lastPct = -1;
-        while ((n = in.read(buf)) > 0) {
-            fo.write(buf, 0, n); done += n;
-            if (total > 0) {
-                int pct = (int) (done * 100 / total);
-                if (pct != lastPct && pct % 2 == 0) { lastPct = pct; updateProgress(pct); }
-            }
-        }
-        fo.close(); in.close();
-        updateProgress(-1);
-        if (expectSize > 0 && done != expectSize) throw new Exception("size mismatch");
-        return out;
-    }
-
-    private File downloadWithMirrors(String asset, String localName, long expectSize, String expectSha) {
-        for (String u : candidateUrls(asset)) {
+        for (int attempt = 0; attempt < 3; attempt++) {
             try {
-                toast("下载中… " + u.substring(0, Math.min(48, u.length())));
-                File f = download(u, localName, expectSize);
-                if (expectSha != null && expectSha.length() == 64) {
-                    String got = sha256(f);
-                    if (got == null || !got.equalsIgnoreCase(expectSha)) {
-                        toast("SHA256 校验失败，换源…");
-                        continue;
-                    }
-                }
-                toast("下载完成 " + (f.length() / 1024) + " KB");
-                return f;
-            } catch (Exception ignore) { }
+                HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+                c.setConnectTimeout(10000);
+                c.setReadTimeout(20000);
+                c.setInstanceFollowRedirects(true);
+                c.setRequestProperty("User-Agent", "ColorArchive-Updater/3");
+                if (c.getResponseCode() != 200) continue;
+                InputStream in = c.getInputStream();
+                StringBuilder sb = new StringBuilder();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = in.read(buf)) > 0) sb.append(new String(buf, 0, n, "UTF-8"));
+                in.close();
+                return sb.toString();
+            } catch (Exception e) { try { Thread.sleep(1500); } catch (Exception ignore) { } }
         }
-        updateProgress(-1);
-        toast("所有源都失败");
         return null;
     }
 
-    private String[] candidateUrls(String asset) {
-        String direct = "https://github.com/" + REPO + "/releases/download/" + TAG + "/" + asset;
-        return new String[]{
-                R2_BASE + asset,
-                direct,
-                "https://ghproxy.net/" + direct,
-                "https://gh-proxy.com/" + direct,
-        };
+    private List<String> candidateUrls(String asset) {
+        List<String> l = new ArrayList<>();
+        l.add(R2_BASE + asset);
+        String gh = "https://github.com/" + REPO + "/releases/download/" + TAG + "/" + asset;
+        l.add(gh);
+        l.add("https://ghproxy.net/" + gh);
+        l.add("https://gh-proxy.com/" + gh);
+        l.add("https://ghfast.top/" + gh);
+        return l;
     }
 
+    /** 测速：取每个源前 512 KB，挑最快的一个 */
+    private String pickFastest(String asset) {
+        String best = null;
+        long bestMs = Long.MAX_VALUE;
+        for (String u : candidateUrls(asset)) {
+            long t0 = System.currentTimeMillis();
+            try {
+                HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+                c.setConnectTimeout(6000);
+                c.setReadTimeout(8000);
+                c.setInstanceFollowRedirects(true);
+                c.setRequestProperty("Range", "bytes=0-524287");
+                c.setRequestProperty("User-Agent", "ColorArchive-Updater/3");
+                int code = c.getResponseCode();
+                if (code != 200 && code != 206) continue;
+                InputStream in = c.getInputStream();
+                byte[] buf = new byte[65536];
+                long got = 0;
+                while (got < 524288) {
+                    int n = in.read(buf);
+                    if (n <= 0) break;
+                    got += n;
+                }
+                in.close();
+                long ms = System.currentTimeMillis() - t0;
+                if (got >= 65536 && ms < bestMs) { bestMs = ms; best = u; }
+            } catch (Exception ignore) { }
+        }
+        if (best == null) best = R2_BASE + asset;
+        return best;
+    }
+
+    /** 断点续传下载：失败后从已下载长度继续，最多 6 轮 */
+    private void downloadResumable(String url, File dest, long expectSize, String label) throws Exception {
+        long total = -1;
+        for (int round = 0; round < 6; round++) {
+            long have = dest.exists() ? dest.length() : 0;
+            HttpURLConnection c = (HttpURLConnection) new URL(url).openConnection();
+            c.setConnectTimeout(12000);
+            c.setReadTimeout(30000);
+            c.setInstanceFollowRedirects(true);
+            c.setRequestProperty("User-Agent", "ColorArchive-Updater/3");
+            if (have > 0) c.setRequestProperty("Range", "bytes=" + have + "-");
+            int code = c.getResponseCode();
+            if (code == 416) { dest.delete(); continue; }
+            if (code != 200 && code != 206) throw new Exception("HTTP " + code);
+            if (code == 200) { have = 0; }
+            long len = c.getContentLength();
+            if (len > 0) total = have + len;
+            FileOutputStream fo = new FileOutputStream(dest, have > 0);
+            InputStream in = c.getInputStream();
+            byte[] buf = new byte[131072];
+            int n;
+            long done = have;
+            int lastPct = -1;
+            try {
+                while ((n = in.read(buf)) > 0) {
+                    fo.write(buf, 0, n);
+                    done += n;
+                    if (total > 0) {
+                        int pct = (int) (done * 100 / total);
+                        if (pct != lastPct) {
+                            lastPct = pct;
+                            progress(pct, label + "  " + (done / 1024 / 1024) + " / "
+                                    + (total / 1024 / 1024) + " MB  (" + pct + "%)");
+                        }
+                    }
+                }
+            } finally {
+                try { fo.close(); } catch (Exception ignore) { }
+                try { in.close(); } catch (Exception ignore) { }
+            }
+            if (total > 0 && dest.length() >= total) break;
+            if (total < 0 && dest.length() > 0) break;
+        }
+        progress(-1, null);
+        if (expectSize > 0 && dest.length() != expectSize)
+            throw new Exception("大小不符: " + dest.length() + " != " + expectSize);
+    }
+
+    // ---------- 功能 ----------
+    private void downloadKo() {
+        wake.acquire(10 * 60 * 1000);
+        try {
+            String url = pickFastest(KO_NAME);
+            File f = new File(getCacheDir(), "kernelsu.ko");
+            if (f.exists()) f.delete();
+            toast("下载模块… " + url);
+            downloadResumable(url, f, 0, "内核模块");
+            String ver = cloudKoVer == null ? "" : cloudKoVer;
+            String res = execRoot("mkdir -p /metadata/ksu && cp -f '" + f.getAbsolutePath() + "' '" + META
+                    + "' && chmod 644 '" + META + "' && echo '" + ver + "' > " + META_VER
+                    + " && sync && stat -c %s '" + META + "'");
+            if (res == null || res.trim().length() == 0) { toast("写入失败（root 未授权）"); return; }
+            refresh();
+            confirm("模块已更新", "已写入 " + res.trim() + " 字节" + (ver.isEmpty() ? "" : "（v" + ver + "）")
+                    + "\n重启后生效", "立即重启", "稍后",
+                    new Runnable() { public void run() { execRoot("reboot"); } });
+        } catch (Exception e) {
+            toast("模块更新失败：" + e.getMessage());
+        } finally {
+            if (wake.isHeld()) wake.release();
+        }
+    }
+
+    private void flashBoot() {
+        wake.acquire(60 * 60 * 1000);
+        try {
+            File img = new File(getCacheDir(), "boot.img");
+            boolean gz = false;
+            String url = pickFastest(BOOT_GZ);
+            toast("下载 boot(gz)… " + url);
+            try {
+                File gzf = new File(getCacheDir(), "boot.img.gz");
+                if (gzf.exists()) gzf.delete();
+                downloadResumable(url, gzf, 0, "boot 镜像(压缩)");
+                toast("解压中…");
+                gunzip(gzf, img);
+                gz = true;
+                gzf.delete();
+            } catch (Exception e) {
+                toast("压缩源不可用，改下完整镜像：" + e.getMessage());
+                if (img.exists()) img.delete();
+                String url2 = pickFastest(BOOT_NAME);
+                downloadResumable(url2, img, 0, "boot 镜像");
+            }
+            long len = img.length();
+            if (len < 64L * 1024 * 1024) throw new Exception("镜像太小: " + len);
+            String magic = execRoot("head -c 8 '" + img.getAbsolutePath() + "'");
+            if (magic == null || !magic.startsWith("ANDROID!")) throw new Exception("镜像头无效");
+            String slot = execRoot("getprop ro.boot.slot_suffix");
+            slot = (slot == null || slot.trim().isEmpty()) ? "_a" : slot.trim();
+            final String part = "/dev/block/by-name/boot" + slot;
+            String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
+            final String backup = "/sdcard/Download/boot_backup_" + stamp + ".img";
+            toast("校验通过，备份当前 boot…");
+            String bk = execRoot("dd if=" + part + " of=" + backup + " bs=4M 2>&1 | tail -1; ls -l " + backup);
+            if (bk == null || !bk.contains("boot_backup")) throw new Exception("备份失败");
+            toast("写入 " + part + " …");
+            execRoot("dd if='" + img.getAbsolutePath() + "' of=" + part + " bs=4M conv=fsync 2>&1 | tail -2");
+            String chk = execRoot("dd if=" + part + " bs=1 count=8 2>/dev/null");
+            if (chk == null || !chk.startsWith("ANDROID!")) throw new Exception("写入校验失败，请用备份恢复：" + backup);
+            img.delete();
+            confirm("刷写完成", "已写入 " + part + "\n备份：" + backup + "\n\n立即重启？", "立即重启", "稍后",
+                    new Runnable() { public void run() { execRoot("reboot"); } });
+        } catch (Exception e) {
+            toast("刷写失败：" + e.getMessage());
+        } finally {
+            if (wake.isHeld()) wake.release();
+        }
+    }
+
+    private void gunzip(File src, File dst) throws Exception {
+        GZIPInputStream in = new GZIPInputStream(new FileInputStream(src), 262144);
+        FileOutputStream out = new FileOutputStream(dst);
+        byte[] buf = new byte[262144];
+        int n;
+        long done = 0;
+        while ((n = in.read(buf)) > 0) {
+            out.write(buf, 0, n);
+            done += n;
+            if ((done & 0xFFFFF) == 0) progress(-1, "解压 " + (done / 1024 / 1024) + " MB");
+        }
+        out.close();
+        in.close();
+    }
+
+    // ---------- shell ----------
     private String execRoot(String cmd) { return exec(new String[]{"su", "-c", cmd}); }
     private String exec(String cmd) { return exec(new String[]{"sh", "-c", cmd}); }
 
@@ -691,69 +809,27 @@ public class MainActivity extends Activity {
         } catch (Exception e) { return null; }
     }
 
-    // ---------- 功能 ----------
-    private void downloadKo() {
-        File ko = downloadWithMirrors(KO_NAME, "kernelsu.ko", 0, cloudKoSha);
-        if (ko == null) return;
-        String ver = cloudKoVer == null ? "" : cloudKoVer;
-        String res = execRoot("mkdir -p /metadata/ksu && cp -f '" + ko.getAbsolutePath() + "' '" + META
-                + "' && chmod 644 '" + META + "' && echo '" + ver + "' > " + META_VER
-                + " && sync && stat -c %s '" + META + "'");
-        if (res == null || res.trim().length() == 0) { toast("写入失败（root 未授权）"); return; }
-        refresh();
-        new Thread(new Runnable() { public void run() { loadManifest(false); } }).start();
-        confirm("模块已更新", "已写入 " + res.trim() + " 字节" + (ver.isEmpty() ? "" : "（v" + ver + "）")
-                + "\n重启后生效", "立即重启", "稍后",
-                new Runnable() { public void run() { execRoot("reboot"); } });
-    }
-
-    private void flashBoot() {
-        toast("准备下载 boot（约 192 MB）…");
-        File img = downloadWithMirrors(BOOT_NAME, "boot.img", 0, cloudBootSha);
-        if (img == null) return;
-        if (img.length() < 64L * 1024 * 1024) { toast("镜像太小，已中止"); return; }
-        String magic = execRoot("head -c 8 '" + img.getAbsolutePath() + "'");
-        if (magic == null || !magic.startsWith("ANDROID!")) { toast("镜像头无效，已中止"); return; }
-        String slot = execRoot("getprop ro.boot.slot_suffix");
-        slot = slot == null ? "_a" : slot.trim();
-        final String part = "/dev/block/by-name/boot" + slot;
-        String stamp = new SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(new Date());
-        final String backup = "/sdcard/Download/boot_backup_" + stamp + ".img";
-        toast("校验通过，备份当前 boot…");
-        String bk = execRoot("dd if=" + part + " of=" + backup + " bs=4M 2>&1 | tail -1; ls -l " + backup);
-        if (bk == null || !bk.contains("boot_backup")) { toast("备份失败，已中止"); return; }
-        toast("写入 " + part + " …");
-        execRoot("dd if='" + img.getAbsolutePath() + "' of=" + part + " bs=4M conv=fsync 2>&1 | tail -2");
-        String chk = execRoot("dd if=" + part + " bs=1 count=8 2>/dev/null");
-        if (chk == null || !chk.startsWith("ANDROID!")) {
-            toast("写入校验失败！请用备份恢复：" + backup);
-            return;
-        }
-        confirm("刷写完成", "已写入 " + part + "\n备份：" + backup + "\n\n立即重启？", "立即重启", "稍后",
-                new Runnable() { public void run() { execRoot("reboot"); } });
-    }
-
     // ---------- 图标 ----------
     static class IconView extends View {
         static final int ICON_DOWNLOAD = 0;
         static final int ICON_BOLT = 1;
         private final int type;
-        private final Paint p = new Paint(Paint.ANTI_ALIAS_FLAG);
+        private final android.graphics.Paint p = new android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG);
 
         IconView(android.content.Context c, int type, int color) {
             super(c);
             this.type = type;
             p.setColor(color);
-            p.setStyle(Paint.Style.STROKE);
+            p.setStyle(android.graphics.Paint.Style.STROKE);
             p.setStrokeWidth(2.2f * getResources().getDisplayMetrics().density);
-            p.setStrokeCap(Paint.Cap.ROUND);
-            p.setStrokeJoin(Paint.Join.ROUND);
+            p.setStrokeCap(android.graphics.Paint.Cap.ROUND);
+            p.setStrokeJoin(android.graphics.Paint.Join.ROUND);
         }
 
-        @Override protected void onDraw(Canvas cv) {
+        @Override protected void onDraw(android.graphics.Canvas cv) {
             float w = getWidth(), h = getHeight();
             float cx = w / 2f, cy = h / 2f;
-            Path path = new Path();
+            android.graphics.Path path = new android.graphics.Path();
             if (type == ICON_DOWNLOAD) {
                 cv.drawLine(cx, h * 0.18f, cx, h * 0.66f, p);
                 path.moveTo(cx - w * 0.16f, h * 0.5f);
@@ -769,7 +845,7 @@ public class MainActivity extends Activity {
                 path.lineTo(cx + w * 0.24f, h * 0.42f);
                 path.lineTo(cx - w * 0.02f, h * 0.42f);
                 path.close();
-                p.setStyle(Paint.Style.FILL);
+                p.setStyle(android.graphics.Paint.Style.FILL);
                 cv.drawPath(path, p);
             }
         }
