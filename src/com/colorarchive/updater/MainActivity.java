@@ -51,7 +51,7 @@ public class MainActivity extends Activity {
     private static final String MANIFEST = "manifest.json";
     private static final String APP_META = "app.json";
 
-    private static final int MY_VER = 4;
+    private static final int MY_VER = 5;
 
     private static final int C_PRIMARY = 0xFF4F5BD5;
     private static final int C_SURFACE = 0xFFFBFBFF;
@@ -66,6 +66,7 @@ public class MainActivity extends Activity {
     private TextView koLocal, bootLocal, koBadge, bootBadge;
     private ProgressBar bar;
     private PowerManager.WakeLock wake;
+    private final java.util.concurrent.atomic.AtomicBoolean busy = new java.util.concurrent.atomic.AtomicBoolean(false);
 
     private String cloudKoVer = null, cloudBootVer = null, cloudKoDate = "", cloudBootDate = "";
     private long cloudKoEpoch = 0, cloudBootEpoch = 0;
@@ -187,7 +188,7 @@ public class MainActivity extends Activity {
         a.setTypeface(null, Typeface.BOLD);
         a.setTextColor(C_ON_SURFACE);
         TextView c = new TextView(this);
-        c.setText("LKM 更新器 v3.1");
+        c.setText("LKM 更新器 v3.2");
         c.setTextSize(13);
         c.setTextColor(C_ON_VAR);
         t.addView(a);
@@ -568,7 +569,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     AlertDialog d = new AlertDialog.Builder(MainActivity.this)
                             .setTitle("小程序有新版本")
-                            .setMessage("最新版本 " + fName + "（当前 3.1）\n是否下载并安装？")
+                            .setMessage("最新版本 " + fName + "（当前 3.2）\n是否下载并安装？")
                             .setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
                                 public void onClick(DialogInterface x, int w) {
                                     new Thread(new Runnable() { public void run() { installSelf(fUrl); } }).start();
@@ -580,7 +581,7 @@ public class MainActivity extends Activity {
                 }
             });
         } else if (manual) {
-            toast("已是最新版本（v3.1）");
+            toast("已是最新版本（v3.2）");
         }
     }
 
@@ -732,6 +733,7 @@ public class MainActivity extends Activity {
 
     // ---------- 功能 ----------
     private void downloadKo() {
+        if (!busy.compareAndSet(false, true)) { toast("正在处理中，请等当前任务完成…"); return; }
         toast("准备下载模块…");
         wake.acquire(10 * 60 * 1000);
         try {
@@ -753,10 +755,12 @@ public class MainActivity extends Activity {
             toast("模块更新失败：" + e.getMessage());
         } finally {
             if (wake.isHeld()) wake.release();
+            busy.set(false);
         }
     }
 
     private void flashBoot() {
+        if (!busy.compareAndSet(false, true)) { toast("正在处理中，请等当前任务完成…"); return; }
         toast("准备刷写，正在测速…");
         wake.acquire(60 * 60 * 1000);
         try {
@@ -801,6 +805,7 @@ public class MainActivity extends Activity {
             toast("刷写失败：" + e.getMessage());
         } finally {
             if (wake.isHeld()) wake.release();
+            busy.set(false);
         }
     }
 
