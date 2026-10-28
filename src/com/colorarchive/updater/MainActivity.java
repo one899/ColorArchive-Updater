@@ -51,7 +51,7 @@ public class MainActivity extends Activity {
     private static final String MANIFEST = "manifest.json";
     private static final String APP_META = "app.json";
 
-    private static final int MY_VER = 3;
+    private static final int MY_VER = 4;
 
     private static final int C_PRIMARY = 0xFF4F5BD5;
     private static final int C_SURFACE = 0xFFFBFBFF;
@@ -187,7 +187,7 @@ public class MainActivity extends Activity {
         a.setTypeface(null, Typeface.BOLD);
         a.setTextColor(C_ON_SURFACE);
         TextView c = new TextView(this);
-        c.setText("LKM 更新器 v3.0");
+        c.setText("LKM 更新器 v3.1");
         c.setTextSize(13);
         c.setTextColor(C_ON_VAR);
         t.addView(a);
@@ -524,7 +524,15 @@ public class MainActivity extends Activity {
 
     private String fmtIso(String iso) {
         if (iso == null || iso.length() < 16) return "未知";
-        return iso.substring(5, 10) + " " + iso.substring(11, 16);
+        try {
+            SimpleDateFormat in = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss", Locale.US);
+            in.setTimeZone(java.util.TimeZone.getTimeZone("UTC"));
+            Date d = in.parse(iso.substring(0, 19));
+            SimpleDateFormat out = new SimpleDateFormat("MM-dd HH:mm", Locale.US);
+            return out.format(d);
+        } catch (Exception e) {
+            return iso.substring(5, 10) + " " + iso.substring(11, 16);
+        }
     }
 
     private long parseKernelDate(String unameV) {
@@ -560,7 +568,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     AlertDialog d = new AlertDialog.Builder(MainActivity.this)
                             .setTitle("小程序有新版本")
-                            .setMessage("最新版本 " + fName + "（当前 3.0）\n是否下载并安装？")
+                            .setMessage("最新版本 " + fName + "（当前 3.1）\n是否下载并安装？")
                             .setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
                                 public void onClick(DialogInterface x, int w) {
                                     new Thread(new Runnable() { public void run() { installSelf(fUrl); } }).start();
@@ -572,7 +580,7 @@ public class MainActivity extends Activity {
                 }
             });
         } else if (manual) {
-            toast("已是最新版本（v3.0）");
+            toast("已是最新版本（v3.1）");
         }
     }
 
@@ -626,38 +634,54 @@ public class MainActivity extends Activity {
         return l;
     }
 
-    /** 测速：取每个源前 512 KB，挑最快的一个 */
+    /** 测速：并行取每个源前 128 KB，3 秒超时，挑最快的一个 */
     private String pickFastest(String asset) {
-        String best = null;
-        long bestMs = Long.MAX_VALUE;
-        for (String u : candidateUrls(asset)) {
-            long t0 = System.currentTimeMillis();
-            try {
-                HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
-                c.setConnectTimeout(6000);
-                c.setReadTimeout(8000);
-                c.setInstanceFollowRedirects(true);
-                c.setRequestProperty("Range", "bytes=0-524287");
-                c.setRequestProperty("User-Agent", "ColorArchive-Updater/3");
-                int code = c.getResponseCode();
-                if (code != 200 && code != 206) continue;
-                InputStream in = c.getInputStream();
-                byte[] buf = new byte[65536];
-                long got = 0;
-                while (got < 524288) {
-                    int n = in.read(buf);
-                    if (n <= 0) break;
-                    got += n;
+        final List<String> cands = candidateUrls(asset);
+        final long[] bestMs = { Long.MAX_VALUE };
+        final String[] best = { null };
+        List<Thread> ts = new ArrayList<>();
+        for (final String u : cands) {
+            Thread t = new Thread(new Runnable() {
+                public void run() {
+                    long t0 = System.currentTimeMillis();
+                    try {
+                        HttpURLConnection c = (HttpURLConnection) new URL(u).openConnection();
+                        c.setConnectTimeout(3000);
+                        c.setReadTimeout(3000);
+                        c.setInstanceFollowRedirects(true);
+                        c.setRequestProperty("Range", "bytes=0-131071");
+                        c.setRequestProperty("User-Agent", "ColorArchive-Updater/3");
+                        int code = c.getResponseCode();
+                        if (code != 200 && code != 206) return;
+                        InputStream in = c.getInputStream();
+                        byte[] buf = new byte[16384];
+                        long got = 0;
+                        while (got < 131072) {
+                            int n = in.read(buf);
+                            if (n <= 0) break;
+                            got += n;
+                        }
+                        in.close();
+                        long ms = System.currentTimeMillis() - t0;
+                        if (got >= 16384) {
+                            synchronized (bestMs) {
+                                if (ms < bestMs[0]) { bestMs[0] = ms; best[0] = u; }
+                            }
+                        }
+                    } catch (Exception ignore) { }
                 }
-                in.close();
-                long ms = System.currentTimeMillis() - t0;
-                if (got >= 65536 && ms < bestMs) { bestMs = ms; best = u; }
-            } catch (Exception ignore) { }
+            });
+            t.start();
+            ts.add(t);
         }
-        if (best == null) best = R2_BASE + asset;
-        return best;
+        long deadline = System.currentTimeMillis() + 5000;
+        for (Thread t : ts) {
+            long left = deadline - System.currentTimeMillis();
+            if (left <= 0) break;
+            try { t.join(left); } catch (Exception ignore) { }
+        }
+        return best[0] != null ? best[0] : R2_BASE + asset;
     }
-
     /** 断点续传下载：失败后从已下载长度继续，最多 6 轮 */
     private void downloadResumable(String url, File dest, long expectSize, String label) throws Exception {
         long total = -1;
@@ -708,6 +732,7 @@ public class MainActivity extends Activity {
 
     // ---------- 功能 ----------
     private void downloadKo() {
+        toast("准备下载模块…");
         wake.acquire(10 * 60 * 1000);
         try {
             String url = pickFastest(KO_NAME);
@@ -732,6 +757,7 @@ public class MainActivity extends Activity {
     }
 
     private void flashBoot() {
+        toast("准备刷写，正在测速…");
         wake.acquire(60 * 60 * 1000);
         try {
             File img = new File(getCacheDir(), "boot.img");
