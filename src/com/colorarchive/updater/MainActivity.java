@@ -51,7 +51,7 @@ public class MainActivity extends Activity {
     private static final String MANIFEST = "manifest.json";
     private static final String APP_META = "app.json";
 
-    private static final int MY_VER = 5;
+    private static final int MY_VER = 6;
 
     private static final int C_PRIMARY = 0xFF4F5BD5;
     private static final int C_SURFACE = 0xFFFBFBFF;
@@ -96,7 +96,7 @@ public class MainActivity extends Activity {
         root.addView(section("操作"));
         root.addView(filledCard(IconView.ICON_DOWNLOAD, "更新内核模块", "0.4 MB · 写入 /metadata 后重启生效",
                 new Runnable() { public void run() { downloadKo(); } }));
-        root.addView(tonalCard(IconView.ICON_BOLT, "刷写 boot 镜像", "192 MB · 自动选最快节点 · 支持断点续传",
+        root.addView(tonalCard(IconView.ICON_BOLT, "刷写 boot 镜像", "192 MB · 自动选最快节点 · 断点续传 · 后台不断",
                 new Runnable() { public void run() { flashBoot(); } }));
 
         LinearLayout row = new LinearLayout(this);
@@ -188,7 +188,7 @@ public class MainActivity extends Activity {
         a.setTypeface(null, Typeface.BOLD);
         a.setTextColor(C_ON_SURFACE);
         TextView c = new TextView(this);
-        c.setText("LKM 更新器 v3.2");
+        c.setText("LKM 更新器 v3.3");
         c.setTextSize(13);
         c.setTextColor(C_ON_VAR);
         t.addView(a);
@@ -569,7 +569,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     AlertDialog d = new AlertDialog.Builder(MainActivity.this)
                             .setTitle("小程序有新版本")
-                            .setMessage("最新版本 " + fName + "（当前 3.2）\n是否下载并安装？")
+                            .setMessage("最新版本 " + fName + "（当前 3.3）\n是否下载并安装？")
                             .setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
                                 public void onClick(DialogInterface x, int w) {
                                     new Thread(new Runnable() { public void run() { installSelf(fUrl); } }).start();
@@ -581,7 +581,7 @@ public class MainActivity extends Activity {
                 }
             });
         } else if (manual) {
-            toast("已是最新版本（v3.2）");
+            toast("已是最新版本（v3.3）");
         }
     }
 
@@ -765,24 +765,11 @@ public class MainActivity extends Activity {
         wake.acquire(60 * 60 * 1000);
         try {
             File img = new File(getCacheDir(), "boot.img");
-            boolean gz = false;
-            String url = pickFastest(BOOT_GZ);
-            toast("下载 boot(gz)… " + url);
-            try {
-                File gzf = new File(getCacheDir(), "boot.img.gz");
-                if (gzf.exists()) gzf.delete();
-                downloadResumable(url, gzf, 0, "boot 镜像(压缩)");
-                toast("解压中…");
-                gunzip(gzf, img);
-                gz = true;
-                gzf.delete();
-            } catch (Exception e) {
-                toast("压缩源不可用，改下完整镜像：" + e.getMessage());
-                if (img.exists()) img.delete();
-                String url2 = pickFastest(BOOT_NAME);
-                downloadResumable(url2, img, 0, "boot 镜像");
-            }
-            long len = img.length();
+            if (img.exists()) img.delete();
+            String url = pickFastest(BOOT_NAME);
+            toast("下载 boot… " + url);
+            downloadResumable(url, img, 0, "boot 镜像");
+            refreshProgressDone();            long len = img.length();
             if (len < 64L * 1024 * 1024) throw new Exception("镜像太小: " + len);
             String magic = execRoot("head -c 8 '" + img.getAbsolutePath() + "'");
             if (magic == null || !magic.startsWith("ANDROID!")) throw new Exception("镜像头无效");
@@ -808,6 +795,8 @@ public class MainActivity extends Activity {
             busy.set(false);
         }
     }
+
+    private void refreshProgressDone() { progress(-1, null); }
 
     private void gunzip(File src, File dst) throws Exception {
         GZIPInputStream in = new GZIPInputStream(new FileInputStream(src), 262144);
