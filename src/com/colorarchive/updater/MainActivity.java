@@ -51,7 +51,16 @@ public class MainActivity extends Activity {
     private static final String MANIFEST = "manifest.json";
     private static final String APP_META = "app.json";
 
-    private static final int MY_VER = 7;
+    private static final int MY_VER = 8;
+    private static final String PREF = "colorarchive_updater";
+    private static final String PREF_DEV = "target_device";
+
+    /** 索引 0-4 走 9RT 包，5-6 走 9P 包 */
+    private static final String[] DEVICES = {
+            "真我 GT", "真我 GT2", "OPPO Find X3 Pro", "OPPO Reno10", "一加 9RT",
+            "一加 9", "一加 9 Pro"
+    };
+    private static final boolean[] DEV_IS_9P = {false, false, false, false, false, true, true};
 
     private static final int C_PRIMARY = 0xFF4F5BD5;
     private static final int C_SURFACE = 0xFFFBFBFF;
@@ -72,6 +81,8 @@ public class MainActivity extends Activity {
     private long cloudKoEpoch = 0, cloudBootEpoch = 0;
     private String cloudKoSha = "", cloudBootSha = "";
     private String localDevice = "", cloudDevice = "";
+    private int targetIdx = 4;
+    private boolean target9p = false;
 
     @Override
     protected void onCreate(Bundle b) {
@@ -110,6 +121,11 @@ public class MainActivity extends Activity {
                         new Runnable() { public void run() { execRoot("reboot"); } });
             }
         });
+        TextView sw = textButton("切换机型");
+        sw.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) { showDevicePicker(); }
+        });
+        row.addView(sw, new LinearLayout.LayoutParams(0, ViewGroup.LayoutParams.WRAP_CONTENT, 1f));
         TextView refresh = textButton("检查更新");
         refresh.setOnClickListener(new View.OnClickListener() {
             public void onClick(View v) {
@@ -123,6 +139,7 @@ public class MainActivity extends Activity {
         sv.addView(root);
         setContentView(sv);
 
+        initTargetDevice();
         refresh();
         new Thread(new Runnable() { public void run() { loadManifest(); checkAppUpdate(false); } }).start();
     }
@@ -189,7 +206,7 @@ public class MainActivity extends Activity {
         a.setTypeface(null, Typeface.BOLD);
         a.setTextColor(C_ON_SURFACE);
         TextView c = new TextView(this);
-        c.setText("LKM 更新器 v3.4");
+        c.setText("LKM 更新器 v3.5");
         c.setTextSize(13);
         c.setTextColor(C_ON_VAR);
         t.addView(a);
@@ -435,7 +452,7 @@ public class MainActivity extends Activity {
                 ui.post(new Runnable() {
                     public void run() {
                         heroTitle.setText(rootOk ? (fMod ? "运行正常" : "模块未加载") : "需要 root 授权");
-                        heroSub.setText("内核 " + kv + "\n设备 " + localDevice + (cloudDevice.isEmpty() ? "" : "   ·   目标 " + cloudDevice + (cloudDevice.equals(localDevice) ? " ✓" : " ✗")) + (rootOk ? "" : "\n点操作按钮会弹出授权请求"));
+                        heroSub.setText("内核 " + kv + "\n目标 " + DEVICES[targetIdx] + "  ·  设备 " + localDevice + (cloudDevice.isEmpty() ? "" : "   ·   目标 " + cloudDevice + (cloudDevice.equals(localDevice) ? " ✓" : " ✗")) + (rootOk ? "" : "\n点操作按钮会弹出授权请求"));
                         chipRoot.setText(rootOk ? "root ✓" : "root ✗");
                         chipMod.setText(fMod ? "模块 ✓" : "模块 ✗");
                         chipHot.setText(fHot ? "热更新 ✓" : "热更新 —");
@@ -447,11 +464,65 @@ public class MainActivity extends Activity {
         }).start();
     }
 
+    // ---------- 机型选择 ----------
+    private void initTargetDevice() {
+        android.content.SharedPreferences sp = getSharedPreferences(PREF, MODE_PRIVATE);
+        int saved = sp.getInt(PREF_DEV, -1);
+        if (saved >= 0 && saved < DEVICES.length) {
+            applyTarget(saved);
+        } else {
+            int guess = guessDevice();
+            applyTarget(guess);
+            showDevicePicker();
+        }
+    }
+
+    private int guessDevice() {
+        String d = localDevice == null ? "" : localDevice.toLowerCase(Locale.US);
+        String m = "";
+        try { m = exec("getprop ro.product.model"); } catch (Exception ignore) { }
+        m = m == null ? "" : m.toLowerCase(Locale.US);
+        if (d.contains("lemonadep") || m.contains("le212")) return 6;   // 9 Pro
+        if (d.contains("lemonade") || m.contains("le211")) return 5;    // 9
+        if (d.contains("martini") || m.contains("mt211")) return 4;     // 9RT
+        return 4;
+    }
+
+    private void applyTarget(int idx) {
+        if (idx < 0 || idx >= DEVICES.length) idx = 4;
+        targetIdx = idx;
+        target9p = DEV_IS_9P[idx];
+        toast("已选择：" + DEVICES[idx] + (target9p ? "（9P 内核）" : "（9RT 内核）"));
+    }
+
+    private void showDevicePicker() {
+        ui.post(new Runnable() {
+            public void run() {
+                AlertDialog d = new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("选择你的机型")
+                        .setItems(DEVICES, new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface x, int which) {
+                                getSharedPreferences(PREF, MODE_PRIVATE).edit()
+                                        .putInt(PREF_DEV, which).apply();
+                                applyTarget(which);
+                                new Thread(new Runnable() {
+                                    public void run() { loadManifest(); }
+                                }).start();
+                            }
+                        })
+                        .setCancelable(false)
+                        .create();
+                d.setCanceledOnTouchOutside(false);
+                d.show();
+            }
+        });
+    }
+
     // ---------- 云端清单 ----------
     private void loadManifest() {
         JSONObject m = null;
         try {
-            String txt = httpGet(R2_BASE + MANIFEST);
+            String txt = httpGet(baseUrl() + MANIFEST);
             if (txt != null && txt.length() > 10) m = new JSONObject(txt);
         } catch (Exception ignore) { }
         if (m == null) return;
@@ -577,7 +648,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     AlertDialog d = new AlertDialog.Builder(MainActivity.this)
                             .setTitle("小程序有新版本")
-                            .setMessage("最新版本 " + fName + "（当前 3.4）\n是否下载并安装？")
+                            .setMessage("最新版本 " + fName + "（当前 3.5）\n是否下载并安装？")
                             .setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
                                 public void onClick(DialogInterface x, int w) {
                                     new Thread(new Runnable() { public void run() { installSelf(fUrl); } }).start();
@@ -589,7 +660,7 @@ public class MainActivity extends Activity {
                 }
             });
         } else if (manual) {
-            toast("已是最新版本（v3.4）");
+            toast("已是最新版本（v3.5）");
         }
     }
 
@@ -632,9 +703,13 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    private String baseUrl() { return target9p ? R2_BASE + "9pro/" : R2_BASE; }
+
+    private String bootAsset() { return target9p ? "boot-lkm-9pro.img" : "boot-lkm-9rt.img"; }
+
     private List<String> candidateUrls(String asset) {
         List<String> l = new ArrayList<>();
-        l.add(R2_BASE + asset);
+        l.add(baseUrl() + asset);
         String gh = "https://github.com/" + REPO + "/releases/download/" + TAG + "/" + asset;
         l.add(gh);
         l.add("https://ghproxy.net/" + gh);
@@ -689,7 +764,7 @@ public class MainActivity extends Activity {
             if (left <= 0) break;
             try { t.join(left); } catch (Exception ignore) { }
         }
-        return best[0] != null ? best[0] : R2_BASE + asset;
+        return best[0] != null ? best[0] : baseUrl() + asset;
     }
     /** 断点续传下载：失败后从已下载长度继续，最多 6 轮 */
     private void downloadResumable(String url, File dest, long expectSize, String label) throws Exception {
@@ -818,7 +893,7 @@ public class MainActivity extends Activity {
         try {
             File img = new File(getCacheDir(), "boot.img");
             if (img.exists()) img.delete();
-            String url = pickFastest(BOOT_NAME);
+            String url = pickFastest(bootAsset());
             toast("下载 boot… " + url);
             downloadResumable(url, img, 0, "boot 镜像");
             refreshProgressDone();            long len = img.length();
