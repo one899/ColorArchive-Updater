@@ -56,7 +56,7 @@ jobs:
           set -x
           [ -z "$CLOUDFLARE_API_TOKEN" ] && { echo "R2 not configured"; exit 0; }
           npx -y wrangler@latest r2 object put "$R2_BUCKET/ColorArchiveUpdater.apk" --file ColorArchiveUpdater.apk --remote --content-type application/vnd.android.package-archive || true
-          printf '{"versionCode":7,"versionName":"3.4","url":"https://lkm.colorarchive.cloud/ColorArchiveUpdater.apk"}' > app.json
+          printf '{"versionCode":8,"versionName":"3.5","url":"https://lkm.colorarchive.cloud/ColorArchiveUpdater.apk"}' > app.json
           cat app.json
           npx -y wrangler@latest r2 object put "$R2_BUCKET/app.json" --file app.json --remote --content-type application/json || true
           npx -y wrangler@latest r2 object list "$R2_BUCKET" --remote || true
