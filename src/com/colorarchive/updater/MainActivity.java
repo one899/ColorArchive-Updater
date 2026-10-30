@@ -51,7 +51,7 @@ public class MainActivity extends Activity {
     private static final String MANIFEST = "manifest.json";
     private static final String APP_META = "app.json";
 
-    private static final int MY_VER = 6;
+    private static final int MY_VER = 7;
 
     private static final int C_PRIMARY = 0xFF4F5BD5;
     private static final int C_SURFACE = 0xFFFBFBFF;
@@ -71,6 +71,7 @@ public class MainActivity extends Activity {
     private String cloudKoVer = null, cloudBootVer = null, cloudKoDate = "", cloudBootDate = "";
     private long cloudKoEpoch = 0, cloudBootEpoch = 0;
     private String cloudKoSha = "", cloudBootSha = "";
+    private String localDevice = "", cloudDevice = "";
 
     @Override
     protected void onCreate(Bundle b) {
@@ -188,7 +189,7 @@ public class MainActivity extends Activity {
         a.setTypeface(null, Typeface.BOLD);
         a.setTextColor(C_ON_SURFACE);
         TextView c = new TextView(this);
-        c.setText("LKM 更新器 v3.3");
+        c.setText("LKM 更新器 v3.4");
         c.setTextSize(13);
         c.setTextColor(C_ON_VAR);
         t.addView(a);
@@ -414,6 +415,9 @@ public class MainActivity extends Activity {
         new Thread(new Runnable() {
             public void run() {
                 String root = execRoot("id");
+                localDevice = exec("getprop ro.product.device");
+                if (localDevice == null) localDevice = "";
+                localDevice = localDevice.trim();
                 final boolean rootOk = root != null && root.contains("uid=0");
                 final String kv = System.getProperty("os.version");
                 boolean mod = false, hot = false;
@@ -431,7 +435,7 @@ public class MainActivity extends Activity {
                 ui.post(new Runnable() {
                     public void run() {
                         heroTitle.setText(rootOk ? (fMod ? "运行正常" : "模块未加载") : "需要 root 授权");
-                        heroSub.setText("内核 " + kv + (rootOk ? "" : "\n点操作按钮会弹出授权请求"));
+                        heroSub.setText("内核 " + kv + "\n设备 " + localDevice + (cloudDevice.isEmpty() ? "" : "   ·   目标 " + cloudDevice + (cloudDevice.equals(localDevice) ? " ✓" : " ✗")) + (rootOk ? "" : "\n点操作按钮会弹出授权请求"));
                         chipRoot.setText(rootOk ? "root ✓" : "root ✗");
                         chipMod.setText(fMod ? "模块 ✓" : "模块 ✗");
                         chipHot.setText(fHot ? "热更新 ✓" : "热更新 —");
@@ -452,6 +456,7 @@ public class MainActivity extends Activity {
         } catch (Exception ignore) { }
         if (m == null) return;
         try {
+            cloudDevice = m.optString("device", "");
             JSONObject ko = m.optJSONObject("ko");
             JSONObject boot = m.optJSONObject("boot");
             if (ko != null) {
@@ -492,6 +497,9 @@ public class MainActivity extends Activity {
                         + (cloudBootDate.isEmpty() ? "" : "  ·  云端 " + fmtIso(cloudBootDate)));
                 if (koNewer) showBadge(koBadge, "模块有新版"); else hideBadge(koBadge);
                 if (bootNewer) showBadge(bootBadge, "内核有新版"); else hideBadge(bootBadge);
+                heroSub.setText("内核 " + localBootVer + "\n设备 " + localDevice
+                        + (cloudDevice.isEmpty() ? "" : "   ·   目标 " + cloudDevice
+                        + (cloudDevice.equals(localDevice) ? " ✓" : "  ⛔ 不匹配")));
             }
         });
     }
@@ -569,7 +577,7 @@ public class MainActivity extends Activity {
                 public void run() {
                     AlertDialog d = new AlertDialog.Builder(MainActivity.this)
                             .setTitle("小程序有新版本")
-                            .setMessage("最新版本 " + fName + "（当前 3.3）\n是否下载并安装？")
+                            .setMessage("最新版本 " + fName + "（当前 3.4）\n是否下载并安装？")
                             .setPositiveButton("立即更新", new DialogInterface.OnClickListener() {
                                 public void onClick(DialogInterface x, int w) {
                                     new Thread(new Runnable() { public void run() { installSelf(fUrl); } }).start();
@@ -581,7 +589,7 @@ public class MainActivity extends Activity {
                 }
             });
         } else if (manual) {
-            toast("已是最新版本（v3.3）");
+            toast("已是最新版本（v3.4）");
         }
     }
 
@@ -732,8 +740,53 @@ public class MainActivity extends Activity {
     }
 
     // ---------- 功能 ----------
+    /** 任务入口：并发保护 + 机型提示（SM8350 系列可互刷，仅警告不阻断） */
+    private void startTask(final Runnable body, final String firstMsg, final String label) {
+        if (!busy.compareAndSet(false, true)) {
+            toast("正在处理中，请等当前任务完成…");
+            return;
+        }
+        boolean mismatch = !cloudDevice.isEmpty() && !localDevice.isEmpty()
+                && !cloudDevice.equals(localDevice);
+        if (!mismatch) {
+            toast(firstMsg);
+            new Thread(body).start();
+            return;
+        }
+        ui.post(new Runnable() {
+            public void run() {
+                AlertDialog d = new AlertDialog.Builder(MainActivity.this)
+                        .setTitle("机型不一致，继续吗？")
+                        .setMessage("此镜像构建自 " + cloudDevice + "（9RT）\n你的设备是 " + localDevice
+                                + "\n\n已知情况：\n"
+                                + "· 9 / 9P 刷 9RT 内核：可开机，但会出现电池异常（电量/充电显示不正确）\n"
+                                + "· 9 刷 9P 内核：无此问题\n"
+                                + "· 真我 GT / Find X3 Pro / Reno10 刷 9RT：正常\n\n"
+                                + "确定要继续刷写吗？")
+                        .setPositiveButton("继续", new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface x, int w) {
+                                toast(firstMsg);
+                                new Thread(body).start();
+                            }
+                        })
+                        .setNegativeButton("取消", new DialogInterface.OnClickListener() {
+                            public void onClick(DialogInterface x, int w) { busy.set(false); }
+                        })
+                        .create();
+                d.setCanceledOnTouchOutside(false);
+                d.show();
+            }
+        });
+    }
+
     private void downloadKo() {
-        if (!busy.compareAndSet(false, true)) { toast("正在处理中，请等当前任务完成…"); return; }
+        startTask(new Runnable() { public void run() { doDownloadKo(); } }, "准备下载模块…", "模块");
+    }
+
+    private void flashBoot() {
+        startTask(new Runnable() { public void run() { doFlashBoot(); } }, "准备刷写，正在测速…", "内核");
+    }
+    private void doDownloadKo() {
         toast("准备下载模块…");
         wake.acquire(10 * 60 * 1000);
         try {
@@ -759,8 +812,7 @@ public class MainActivity extends Activity {
         }
     }
 
-    private void flashBoot() {
-        if (!busy.compareAndSet(false, true)) { toast("正在处理中，请等当前任务完成…"); return; }
+    private void doFlashBoot() {
         toast("准备刷写，正在测速…");
         wake.acquire(60 * 60 * 1000);
         try {
